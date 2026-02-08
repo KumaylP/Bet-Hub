@@ -5,9 +5,36 @@ import math
 import asyncio
 from uuid import uuid4
 from typing import Dict, List, Optional, Union, Any
-from fastapi import FastAPI, HTTPException, Body, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, Body, BackgroundTasks, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
+from passlib.context import CryptContext
+import jwt
+from datetime import datetime, timedelta
+
+# ==========================================
+# SECURITY CONFIGURATION
+# ==========================================
+SECRET_KEY = "SUPER_SECRET_KEY_FOR_BETHUB_JWT_AUTHENTICATION" # Change this in production!
+ALGORITHM = "HS256"
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+        return email
+    except jwt.PyJWTError:
+        raise credentials_exception
 
 # ==========================================
 # DATABASE HELPER FUNCTIONS
@@ -309,7 +336,9 @@ class BetHubBackend:
         row = conn.execute("SELECT * FROM user WHERE email=?", (email,)).fetchone()
         conn.close()
         if row:
-            return dict_from_row(row)
+            user_data = dict_from_row(row)
+            user_data.pop('password', None)
+            return user_data
         return None
 
     def get_bet_by_code(self, bet_code: str):
@@ -367,8 +396,10 @@ class BetHubBackend:
             conn.close()
             return {"error": "User exists"}
             
+        hashed_password = pwd_context.hash(password)
+        
         new_user = {
-            "email": email, "name": name, "password": password,
+            "email": email, "name": name, "password": hashed_password,
             "money": 1000.0, "loan": 0.0, "trust": 500.0,
             "loans_taken": 0, "loans_repaid": 0, "on_time_repayments": 0, "default_count": 0, "last_loan_timestamp": 0,
             "loan_interest_rate": 0.0, "loan_due_date": 0.0, "loan_total_interest": 0.0,
@@ -380,7 +411,11 @@ class BetHubBackend:
                         VALUES (:email, :name, :password, :money, :loan, :trust, :loans_taken, :loans_repaid, :on_time_repayments, :default_count, :last_loan_timestamp, :loan_interest_rate, :loan_due_date, :loan_total_interest, :pvt_cards, :bet_admin, :bet_joined, :transaction_history)''', new_user)
         conn.commit()
         conn.close()
-        return new_user
+        
+        # Sanitize for return
+        response_user = new_user.copy()
+        response_user.pop('password', None)
+        return response_user
 
     def login_user(self, email, password):
         email = email.lower().strip()
@@ -391,8 +426,20 @@ class BetHubBackend:
         if not row:
             return {"error": "User not registered. Please register first."}
         
-        if row['password'] == password:
-            return dict_from_row(row)
+        if pwd_context.verify(password, row['password']):
+            user_data = dict_from_row(row)
+            
+            # Generate JWT Token
+            token = jwt.encode({
+                "sub": email,
+                "exp": datetime.utcnow() + timedelta(hours=24)
+            }, SECRET_KEY, algorithm=ALGORITHM)
+            
+            user_data["access_token"] = token
+            user_data["token_type"] = "bearer"
+            user_data.pop('password', None)
+            return user_data
+            
         return {"error": "Invalid password"}
 
     def create_bet(self, creator_email, title, description, bet_type, outcomes, end_time, base_price, category="Sports"):
@@ -713,16 +760,7 @@ class BetHubBackend:
                 
                 # Use Risk-Adjusted Refund Logic if applicable
                 refund_amount = self.calculate_refund_amount(participant['amount'], bet['pool'], participant['amount']) # Simplified for close_bet context
-                # Applying cap logic requested: "Final Refund Amount: user_bet_amount * Refund Rate"
-                # However, for a force-closed bet by admin, typically full refund is expected.
-                # The prompt asks for "Betting Refund System", implying partial refund on loss or early exit?
-                # But here in close_bet it's a full cancellation.
-                # I will adhere to FULL REFUND for 'close_bet' (admin action) as it's safer.
-                # I will implement a new endpoint 'cash_out' or similar if they want partial.
-                # BUT the user prompt said "Risk-Adjusted Refund Module" logic.
-                # I'll stick to full refund for close_bet to avoid angering users, 
-                # but I've implemented the logic in calculate_refund_amount for use elsewhere.
-                
+
                 refund_amount = participant['amount'] # Full refund on admin close
                 user['money'] += refund_amount
                 
@@ -998,15 +1036,21 @@ def get_user_profile(email: str):
     return res
 
 @app.post("/user/loan")
-def take_loan(data: LoanRequest):
+def take_loan(data: LoanRequest, current_user: str = Depends(get_current_user)):
+    if data.email != current_user:
+        raise HTTPException(403, "Not authorized to take loan for another user")
     return backend.apply_loan(data.email, data.amount)
 
 @app.post("/user/repay")
-def repay_loan(data: LoanRequest):
+def repay_loan(data: LoanRequest, current_user: str = Depends(get_current_user)):
+    if data.email != current_user:
+        raise HTTPException(403, "Not authorized to repay loan for another user")
     return backend.repay_loan(data.email, data.amount)
 
 @app.post("/create-bet")
-def create_bet(data: CreateBet, background_tasks: BackgroundTasks):
+def create_bet(data: CreateBet, background_tasks: BackgroundTasks, current_user: str = Depends(get_current_user)):
+    if data.creator_email != current_user:
+        raise HTTPException(403, "Not authorized to create bet as another user")
     return backend.create_bet(data.creator_email, data.title, data.description, data.bet_type, data.outcomes, data.end_time, data.base_price, data.category)
 
 @app.get("/bets")
@@ -1023,19 +1067,27 @@ def get_bet_by_code(bet_code: str):
     return bet
 
 @app.post("/join-bet")
-def join_bet(data: JoinBet):
+def join_bet(data: JoinBet, current_user: str = Depends(get_current_user)):
+    if data.email != current_user:
+        raise HTTPException(403, "Not authorized to join bet as another user")
     return backend.join_bet(data.email, data.bet_id, data.amount, data.prediction)
 
 @app.post("/join-bet-code")
-def join_bet_code(data: JoinBetCode):
+def join_bet_code(data: JoinBetCode, current_user: str = Depends(get_current_user)):
+    if data.email != current_user:
+        raise HTTPException(403, "Not authorized to join bet as another user")
     return backend.join_bet_by_code(data.email, data.bet_code, data.amount, data.prediction)
 
 @app.post("/declare-result")
-def declare_result(data: DeclareResult):
+def declare_result(data: DeclareResult, current_user: str = Depends(get_current_user)):
+    if data.email != current_user:
+        raise HTTPException(403, "Not authorized to declare result as another user")
     return backend.declare_result(data.email, data.bet_id, data.result)
 
 @app.post("/close-bet")
-def close_bet(data: CloseBet):
+def close_bet(data: CloseBet, current_user: str = Depends(get_current_user)):
+    if data.email != current_user:
+        raise HTTPException(403, "Not authorized to close bet as another user")
     return backend.close_bet(data.email, data.bet_id)
 
 
@@ -1064,14 +1116,18 @@ app.add_middleware(
 )
 
 @app.post("/bets/{bet_id}/comments")
-async def post_comment(bet_id: str, req: Request):
+async def post_comment(bet_id: str, req: Request, current_user: str = Depends(get_current_user)):
     data = await req.json()
+    if data.get('email') != current_user:
+        raise HTTPException(403, "Not authorized to post comment as another user")
     res = backend.add_comment(data.get('email'), bet_id, data.get('text'))
     return res
 
 @app.post("/bets/{bet_id}/comments/{comment_id}/like")
-async def like_comment(bet_id: str, comment_id: str, req: Request):
+async def like_comment(bet_id: str, comment_id: str, req: Request, current_user: str = Depends(get_current_user)):
     data = await req.json()
+    if data.get('email') != current_user:
+        raise HTTPException(403, "Not authorized to like comment as another user")
     return backend.toggle_like(data.get('email'), bet_id, comment_id)
 
 if __name__ == "__main__":

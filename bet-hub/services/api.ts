@@ -9,6 +9,19 @@ export interface ApiResponse<T> {
     // We'll normalize this in the service.
 }
 
+// Helper to get headers with JWT token
+const getHeaders = (includeJson = true) => {
+    const headers: Record<string, string> = {};
+    if (includeJson) {
+        headers['Content-Type'] = 'application/json';
+    }
+    const token = localStorage.getItem('accessToken');
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+    return headers;
+};
+
 export const api = {
     // Auth
     login: async (email: string, password: string) => {
@@ -30,7 +43,9 @@ export const api = {
     },
 
     getUser: async (email: string) => {
-        const res = await fetch(`${API_URL}/user/${email}`);
+        const res = await fetch(`${API_URL}/user/${email}`, {
+            headers: getHeaders(false)
+        });
         return res.json();
     },
 
@@ -41,19 +56,24 @@ export const api = {
     },
 
     getBetsForUser: async (email: string) => {
-        const res = await fetch(`${API_URL}/user/${email}/bets`);
+        const res = await fetch(`${API_URL}/user/${email}/bets`, {
+            headers: getHeaders(false)
+        });
         return res.json();
     },
 
-    getBet: async (id: string) => {
-        const res = await fetch(`${API_URL}/bet/${id}`);
+    getBet: async (id: string, email?: string) => {
+        const url = email ? `${API_URL}/bet/${id}?email=${email}` : `${API_URL}/bet/${id}`;
+        const res = await fetch(url, {
+            headers: getHeaders(false)
+        });
         return res.json();
     },
 
     createBet: async (data: any) => {
         const res = await fetch(`${API_URL}/create-bet`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
             body: JSON.stringify(data),
         });
         return res.json();
@@ -62,7 +82,7 @@ export const api = {
     joinBet: async (data: any) => {
         const res = await fetch(`${API_URL}/join-bet`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
             body: JSON.stringify(data),
         });
         return res.json();
@@ -71,7 +91,7 @@ export const api = {
     joinPrivateBet: async (data: any) => {
         const res = await fetch(`${API_URL}/join-bet-code`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
             body: JSON.stringify(data),
         });
         return res.json();
@@ -81,7 +101,7 @@ export const api = {
     applyLoan: async (email: string, amount: number) => {
         const res = await fetch(`${API_URL}/user/loan`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
             body: JSON.stringify({ email, amount }),
         });
         return res.json();
@@ -90,7 +110,7 @@ export const api = {
     repayLoan: async (email: string, amount: number) => {
         const res = await fetch(`${API_URL}/user/repay`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
             body: JSON.stringify({ email, amount }),
         });
         return res.json();
@@ -100,7 +120,7 @@ export const api = {
     declareResult: async (email: string, bet_id: string, result: string) => {
         const res = await fetch(`${API_URL}/declare-result`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
             body: JSON.stringify({ email, bet_id, result }),
         });
         return res.json();
@@ -109,7 +129,7 @@ export const api = {
     closeBet: async (email: string, bet_id: string) => {
         const res = await fetch(`${API_URL}/close-bet`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
             body: JSON.stringify({ email, bet_id }),
         });
         return res.json();
@@ -118,7 +138,7 @@ export const api = {
     addComment: async (email: string, betId: string, text: string) => {
         const res = await fetch(`${API_URL}/bets/${betId}/comments`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
             body: JSON.stringify({ email, text })
         });
         return res.json();
@@ -127,7 +147,7 @@ export const api = {
     likeComment: async (email: string, betId: string, commentId: string) => {
         const res = await fetch(`${API_URL}/bets/${betId}/comments/${commentId}/like`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getHeaders(),
             body: JSON.stringify({ email })
         });
         return res.json();
@@ -135,12 +155,16 @@ export const api = {
 
     // Additional endpoints
     getTransactions: async (email: string) => {
-        const res = await fetch(`${API_URL}/user/${email}/transactions`);
+        const res = await fetch(`${API_URL}/user/${email}/transactions`, {
+            headers: getHeaders(false)
+        });
         return res.json();
     },
 
     getBetByCode: async (bet_code: string) => {
-        const res = await fetch(`${API_URL}/bet-by-code/${bet_code}`);
+        const res = await fetch(`${API_URL}/bet-by-code/${bet_code}`, {
+            headers: getHeaders(false)
+        });
         return res.json();
     }
 };

@@ -70,6 +70,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             }
             setUser(data);
             localStorage.setItem('userEmail', email);
+            if (data.access_token) {
+                localStorage.setItem('accessToken', data.access_token);
+            }
             return {};
         } catch (err) {
             return { error: 'Connection failed' };
@@ -92,6 +95,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const logout = () => {
         setUser(null);
         localStorage.removeItem('userEmail');
+        localStorage.removeItem('accessToken');
     };
 
     return (
